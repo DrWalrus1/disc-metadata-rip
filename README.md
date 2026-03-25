@@ -18,12 +18,12 @@ It works entirely from the disc's filesystem without needing to decrypt or demux
 
 ### CLI
 ```bash
-go install github.com/lukelynch/spindrift/cmd/spindrift@latest
+go install github.com/DrWalrus1/spindrift/cmd/spindrift@latest
 ```
 
 ### Library
 ```bash
-go get github.com/lukelynch/spindrift
+go get github.com/DrWalrus1/spindrift
 ```
 
 ## CLI Usage
@@ -98,9 +98,9 @@ Get a free API key at [themoviedb.org/settings/api](https://www.themoviedb.org/s
 ## Library Usage
 ```go
 import (
-    "github.com/lukelynch/spindrift/bdmv"
-    "github.com/lukelynch/spindrift/disc"
-    "github.com/lukelynch/spindrift/tmdb"
+    "github.com/DrWalrus1/spindrift/bdmv"
+    "github.com/DrWalrus1/spindrift/disc"
+    "github.com/DrWalrus1/spindrift/tmdb"
 )
 
 // Open a disc
