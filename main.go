@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-const envTMDBAPIKey = "TMDB_API_KEY"
-
 func parseDiscTitle(bdmvRoot string) (string, error) {
 	path := filepath.Join(bdmvRoot, bdmtEnglishXML)
 	data, err := os.ReadFile(path)
@@ -26,7 +24,7 @@ func parseDiscTitle(bdmvRoot string) (string, error) {
 	return strings.Join(strings.Fields(name), " "), nil
 }
 
-func run(bdmvRoot string) error {
+func run(bdmvRoot string, startEpisode int) error {
 	// --- index.bdmv ---
 	idx, err := ParseIndex(filepath.Join(bdmvRoot, "index.bdmv"))
 	if err != nil {
@@ -71,13 +69,17 @@ func run(bdmvRoot string) error {
 	discInfo := ParseDiscTitle(discTitle)
 	fmt.Printf("Show:       %s\n", discInfo.ShowName)
 	fmt.Printf("Season:     %d\n", discInfo.Season)
-	fmt.Printf("Disc:       %d\n\n", discInfo.Disc)
+	fmt.Printf("Disc:       %d\n", discInfo.Disc)
+	if startEpisode > 0 {
+		fmt.Printf("Start Ep:   %d\n", startEpisode)
+	}
+	fmt.Println()
 
 	// --- Infer episode duration bounds from disc ---
-	minDur, maxDur := InferEpisodeBounds(bdmvRoot)
+	minDur, maxDur, clusterDur := InferEpisodeBounds(bdmvRoot)
 
 	// --- Episode playlists ---
-	episodes, err := LoadEpisodePlaylists(bdmvRoot, minDur, maxDur)
+	episodes, err := LoadEpisodePlaylists(bdmvRoot, minDur, maxDur, clusterDur)
 	if err != nil {
 		return fmt.Errorf("loading playlists: %w", err)
 	}
@@ -102,7 +104,7 @@ func run(bdmvRoot string) error {
 	}
 	if len(shows) == 0 {
 		fmt.Printf("No TMDB results found for %q\n", discInfo.ShowName)
-		printEpisodesNoTMDB(episodes, discInfo, bdmvRoot)
+		printEpisodesNoTMDB(episodes, discInfo, bdmvRoot, clusterDur, startEpisode)
 		return nil
 	}
 
@@ -114,10 +116,10 @@ func run(bdmvRoot string) error {
 		return fmt.Errorf("TMDB season fetch: %w", err)
 	}
 
-	tmdbEps := EpisodesForDisc(season, discInfo.Disc, len(episodes))
+	tmdbEps := EpisodesForDisc(season, startEpisode, len(episodes))
 
 	// --- Results ---
-	printEpisodes(episodes, tmdbEps, discInfo, bdmvRoot)
+	printEpisodes(episodes, tmdbEps, discInfo, bdmvRoot, clusterDur)
 	return nil
 }
 
@@ -126,23 +128,29 @@ func printEpisodes(
 	tmdbEps []TMDBEpisode,
 	discInfo DiscInfo,
 	bdmvRoot string,
+	clusterDur int,
 ) {
-	fmt.Printf("%-6s %-12s %-10s %-12s %s\n",
+	fmt.Printf("%-6s %-14s %-10s %-12s %s\n",
 		"Ep", "Playlist", "Clip", "Duration", "Title")
-	fmt.Println(strings.Repeat("-", 70))
+	fmt.Println(strings.Repeat("-", 72))
 
 	for i, pl := range episodes {
-		epNum := (discInfo.Disc-1)*len(episodes) + i + 1
+		dur := pl.EstimateDuration(bdmvRoot)
+		count := pl.EstimateEpisodeCount(bdmvRoot, clusterDur)
+
+		epLabel := fmt.Sprintf("S%02dE??", discInfo.Season)
 		title := "unknown"
 		if i < len(tmdbEps) {
-			title = tmdbEps[i].Name
+			ep := tmdbEps[i]
+			epLabel = fmt.Sprintf("S%02dE%02d", discInfo.Season, ep.EpisodeNumber)
+			title = ep.Name
 		}
-		fmt.Printf("S%02dE%02d %-12s %-10s %-12s %s\n",
-			discInfo.Season,
-			epNum,
+
+		fmt.Printf("%-6s %-14s %-10s %-12s %s\n",
+			epLabel,
 			pl.Name,
 			pl.PrimaryClip(),
-			FormatDuration(pl.EstimateDuration(bdmvRoot)),
+			FormatDuration(dur/count),
 			title,
 		)
 	}
@@ -152,41 +160,64 @@ func printEpisodesNoTMDB(
 	episodes []*Playlist,
 	discInfo DiscInfo,
 	bdmvRoot string,
+	clusterDur int,
+	startEpisode int,
 ) {
-	fmt.Printf("%-6s %-12s %-10s %s\n", "Ep", "Playlist", "Clip", "Duration")
-	fmt.Println(strings.Repeat("-", 45))
+	fmt.Printf("%-6s %-14s %-10s %s\n", "Ep", "Playlist", "Clip", "Duration")
+	fmt.Println(strings.Repeat("-", 48))
 
 	for i, pl := range episodes {
-		epNum := (discInfo.Disc-1)*len(episodes) + i + 1
-		fmt.Printf("S%02dE%02d %-12s %-10s %s\n",
+		dur := pl.EstimateDuration(bdmvRoot)
+		count := pl.EstimateEpisodeCount(bdmvRoot, clusterDur)
+
+		epNum := startEpisode + i
+		if startEpisode == 0 {
+			epNum = i + 1
+		}
+
+		fmt.Printf("S%02dE%02d %-14s %-10s %s\n",
 			discInfo.Season,
 			epNum,
 			pl.Name,
 			pl.PrimaryClip(),
-			FormatDuration(pl.EstimateDuration(bdmvRoot)),
+			FormatDuration(dur/count),
 		)
 	}
 }
 
+func parseArgs() (discArg string, startEpisode int) {
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--start-episode":
+			if i+1 < len(args) {
+				fmt.Sscanf(args[i+1], "%d", &startEpisode)
+				i++
+			}
+		default:
+			if !strings.HasPrefix(args[i], "--") && discArg == "" {
+				discArg = args[i]
+			}
+		}
+	}
+	return discArg, startEpisode
+}
+
 func main() {
-	// Load .env from current working directory
 	if err := loadEnv(".env"); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
 	}
 
-	var discArg string
-	if len(os.Args) > 1 {
-		discArg = os.Args[1]
-	}
+	discArg, startEpisode := parseArgs()
 
 	bdmvRoot, err := SelectBDMV(discArg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Usage: %s [disc-path]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [disc-path] [--start-episode N]\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	if err := run(bdmvRoot); err != nil {
+	if err := run(bdmvRoot, startEpisode); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

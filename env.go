@@ -25,7 +25,6 @@ func loadEnv(path string) error {
 		lineNum++
 		line := strings.TrimSpace(scanner.Text())
 
-		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -38,7 +37,7 @@ func loadEnv(path string) error {
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
 
-		// Strip optional surrounding quotes from value
+		// Strip optional surrounding quotes
 		if len(value) >= 2 {
 			if (value[0] == '"' && value[len(value)-1] == '"') ||
 				(value[0] == '\'' && value[len(value)-1] == '\'') {
@@ -46,7 +45,7 @@ func loadEnv(path string) error {
 			}
 		}
 
-		// Don't overwrite existing env vars — allows real env to take precedence
+		// Don't overwrite existing env vars
 		if os.Getenv(key) == "" {
 			os.Setenv(key, value)
 		}

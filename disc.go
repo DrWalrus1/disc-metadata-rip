@@ -15,10 +15,8 @@ func discSearchRoots() []string {
 	case "darwin":
 		return []string{"/Volumes"}
 	case "linux":
-		roots := []string{"/media", "/run/media", "/mnt"}
-		// /run/media/<username>/<disc> — expand one level for user dirs
 		var expanded []string
-		for _, root := range roots {
+		for _, root := range []string{"/media", "/run/media", "/mnt"} {
 			entries, err := os.ReadDir(root)
 			if err != nil {
 				continue
@@ -66,9 +64,7 @@ func FindBDMVRoots() ([]string, error) {
 // SelectBDMV returns a single BDMV root, either from the command line
 // argument, auto-detected, or interactively chosen if multiple are found.
 func SelectBDMV(arg string) (string, error) {
-	// Explicit path provided
 	if arg != "" {
-		// Accept either the BDMV dir itself or its parent
 		if filepath.Base(arg) == "BDMV" {
 			if _, err := os.Stat(arg); err == nil {
 				return arg, nil
@@ -81,7 +77,6 @@ func SelectBDMV(arg string) (string, error) {
 		return "", fmt.Errorf("no BDMV directory found at %s", arg)
 	}
 
-	// Auto-detect
 	found, err := FindBDMVRoots()
 	if err != nil {
 		return "", err
@@ -108,8 +103,48 @@ func SelectBDMV(arg string) (string, error) {
 	}
 }
 
+// absFloat returns the absolute value of a float64.
+func absFloat(f float64) float64 {
+	if f < 0 {
+		return -f
+	}
+	return f
+}
+
+// removeMultiples filters out durations that are near-integer multiples
+// of smaller durations — these are likely "play all" or combined streams.
+func removeMultiples(durations []int) []int {
+	if len(durations) <= 1 {
+		return durations
+	}
+
+	var filtered []int
+	for i, d := range durations {
+		isMultiple := false
+		for j, smaller := range durations {
+			if j >= i {
+				break
+			}
+			ratio := float64(d) / float64(smaller)
+			rounded := float64(int(ratio + 0.5))
+			if rounded < minMultiple {
+				continue
+			}
+			// Relative tolerance: error as fraction of the multiple
+			if absFloat(ratio-rounded)/rounded < multipleDetectionTolerance {
+				isMultiple = true
+				break
+			}
+		}
+		if !isMultiple {
+			filtered = append(filtered, d)
+		}
+	}
+	return filtered
+}
+
 // streamDurations returns estimated durations for all unique clips
-// above a minimum viable size (to exclude obvious stubs).
+// above the minimum cluster duration threshold.
 func streamDurations(bdmvRoot string) []int {
 	pattern := filepath.Join(bdmvRoot, "PLAYLIST", "*.mpls")
 	files, _ := filepath.Glob(pattern)
@@ -129,70 +164,80 @@ func streamDurations(bdmvRoot string) []int {
 		seen[clip] = true
 
 		dur := pl.EstimateDuration(bdmvRoot)
-		if dur >= minViableDuration {
+		if dur >= minClusterDuration {
 			durations = append(durations, dur)
 		}
 	}
 
 	sort.Ints(durations)
+	durations = removeMultiples(durations)
 	return durations
 }
 
-// dominantCluster finds the largest cluster of similar durations
-// using a sliding window approach. Returns (min, max) bounds.
-func dominantCluster(durations []int) (min, max int) {
+// dominantCluster finds the cluster of similar durations that represents
+// the most total content (sum of durations), not just the most streams.
+// Returns (min, max, center) bounds in seconds.
+func dominantCluster(durations []int) (min, max, center int) {
 	if len(durations) == 0 {
-		return minEpisodeDuration, maxEpisodeDuration
+		return minEpisodeDuration, maxEpisodeDuration, 0
 	}
 
 	if len(durations) == 1 {
 		d := durations[0]
 		return int(float64(d) * clusterLowerBound),
-			int(float64(d) * clusterUpperBound)
+			int(float64(d) * clusterUpperBound),
+			d
 	}
 
-	// Find the window with the most values where all values are within
-	// clusterTolerance of each other
-	bestStart, bestCount := 0, 1
+	bestStart, bestScore := 0, 0
 
 	for i := 0; i < len(durations); i++ {
-		count := 1
-		for j := i + 1; j < len(durations); j++ {
+		totalDuration := 0
+		for j := i; j < len(durations); j++ {
 			ratio := float64(durations[j]) / float64(durations[i])
-			if ratio <= clusterTolerance {
-				count++
-			} else {
+			if ratio > clusterTolerance {
 				break
 			}
+			totalDuration += durations[j]
 		}
-		if count > bestCount {
-			bestCount = count
+		if totalDuration > bestScore {
+			bestScore = totalDuration
 			bestStart = i
 		}
 	}
 
-	clusterMin := durations[bestStart]
-	clusterMax := durations[bestStart+bestCount-1]
+	bestEnd := bestStart
+	for j := bestStart + 1; j < len(durations); j++ {
+		ratio := float64(durations[j]) / float64(durations[bestStart])
+		if ratio > clusterTolerance {
+			break
+		}
+		bestEnd = j
+	}
 
-	// Expand bounds by tolerance margin to catch slight variations
+	clusterMin := durations[bestStart]
+	clusterMax := durations[bestEnd]
+	clusterCenter := (clusterMin + clusterMax) / 2
+
 	return int(float64(clusterMin) * clusterLowerBound),
-		int(float64(clusterMax) * clusterUpperBound)
+		int(float64(clusterMax) * clusterUpperBound),
+		clusterCenter
 }
 
 // InferEpisodeBounds analyses stream durations on the disc and returns
-// likely min/max episode duration bounds in seconds.
-func InferEpisodeBounds(bdmvRoot string) (min, max int) {
+// likely min/max episode duration bounds and cluster center in seconds.
+func InferEpisodeBounds(bdmvRoot string) (minDur, maxDur, clusterDur int) {
 	durations := streamDurations(bdmvRoot)
 
 	if len(durations) == 0 {
-		return minEpisodeDuration, maxEpisodeDuration
+		return minEpisodeDuration, maxEpisodeDuration, 0
 	}
 
-	min, max = dominantCluster(durations)
+	minDur, maxDur, clusterDur = dominantCluster(durations)
 
-	fmt.Printf("Inferred episode bounds: %s – %s",
-		FormatDuration(min), FormatDuration(max))
+	fmt.Printf("Inferred episode bounds: %s – %s (cluster center: %s)",
+		FormatDuration(minDur), FormatDuration(maxDur), FormatDuration(clusterDur))
 	fmt.Printf(" (from %d unique stream durations)\n", len(durations))
 
-	return min, max
+	return minDur, maxDur, clusterDur
 }

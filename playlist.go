@@ -13,6 +13,7 @@ import (
 type Playlist struct {
 	Name      string
 	PlayItems []PlayItem
+	Marks     []PlaylistMark
 }
 
 type PlayItem struct {
@@ -22,6 +23,14 @@ type PlayItem struct {
 	Duration int // seconds
 }
 
+type PlaylistMark struct {
+	MarkType    uint8
+	PlayItemRef uint16
+	Timestamp   uint32
+	Duration    uint32
+}
+
+// TotalDuration returns the sum of all PlayItem durations.
 func (p *Playlist) TotalDuration() int {
 	total := 0
 	for _, item := range p.PlayItems {
@@ -58,7 +67,7 @@ func (p *Playlist) PrimaryClip() string {
 	return ""
 }
 
-// EstimateDuration estimates episode duration from stream file size.
+// EstimateDuration estimates total stream duration from file size.
 func (p *Playlist) EstimateDuration(bdmvRoot string) int {
 	clip := p.PrimaryClip()
 	if clip == "" {
@@ -72,11 +81,32 @@ func (p *Playlist) EstimateDuration(bdmvRoot string) int {
 	return int(info.Size() * 8 / estimatedBitrate)
 }
 
-// IsLikelyEpisode returns true if the estimated duration falls within
-// the given min/max bounds in seconds.
-func (p *Playlist) IsLikelyEpisode(bdmvRoot string, minDur, maxDur int) bool {
-	dur := p.EstimateDuration(bdmvRoot)
-	return dur >= minDur && dur <= maxDur
+// EstimateEpisodeCount checks if the stream duration is a near-integer
+// multiple of the cluster episode duration, indicating a combined stream.
+func (p *Playlist) EstimateEpisodeCount(bdmvRoot string, clusterDur int) int {
+	if clusterDur <= 0 {
+		return 1
+	}
+
+	totalDur := p.EstimateDuration(bdmvRoot)
+	if totalDur < minViableDuration {
+		return 1
+	}
+
+	ratio := float64(totalDur) / float64(clusterDur)
+	rounded := int(ratio + 0.5)
+
+	if rounded < 1 || rounded > maxEpisodesPerStream {
+		return 1
+	}
+
+	// Relative tolerance: error as fraction of the multiple,
+	// consistent with removeMultiples approach
+	if absFloat(ratio-float64(rounded))/float64(rounded) > episodeRatioTolerance {
+		return 1
+	}
+
+	return rounded
 }
 
 func FormatDuration(secs int) string {
@@ -102,9 +132,14 @@ func ParsePlaylist(path string) (*Playlist, error) {
 		return nil, fmt.Errorf("not an mpls file")
 	}
 
+	// Read PlayList and PlayListMark offsets from header
 	f.Seek(playlistOffsetAddr, io.SeekStart)
 	var playlistOffset uint32
 	binary.Read(f, binary.BigEndian, &playlistOffset)
+
+	f.Seek(playlistMarkOffsetAddr, io.SeekStart)
+	var markOffset uint32
+	binary.Read(f, binary.BigEndian, &markOffset)
 
 	// PlayList() header: length(4) + reserved(2) + num_items(2) + num_subpaths(2)
 	f.Seek(int64(playlistOffset)+playlistHeaderSkip, io.SeekStart)
@@ -144,7 +179,47 @@ func ParsePlaylist(path string) (*Playlist, error) {
 		f.Seek(itemStart+2+int64(itemLen), io.SeekStart)
 	}
 
+	// Parse PlayListMark section
+	if markOffset > 0 {
+		pl.Marks, _ = parsePlaylistMarks(f, markOffset)
+	}
+
 	return pl, nil
+}
+
+func parsePlaylistMarks(f *os.File, markOffset uint32) ([]PlaylistMark, error) {
+	f.Seek(int64(markOffset), io.SeekStart)
+
+	var length uint32
+	binary.Read(f, binary.BigEndian, &length)
+
+	var numMarks uint16
+	binary.Read(f, binary.BigEndian, &numMarks)
+
+	marks := make([]PlaylistMark, numMarks)
+	for i := range marks {
+		var markType uint8
+		var playItemRef uint16
+		var reserved uint16
+		var ts uint32
+		var esPid uint16
+		var dur uint32
+
+		binary.Read(f, binary.BigEndian, &markType)
+		binary.Read(f, binary.BigEndian, &playItemRef)
+		binary.Read(f, binary.BigEndian, &reserved)
+		binary.Read(f, binary.BigEndian, &ts)
+		binary.Read(f, binary.BigEndian, &esPid)
+		binary.Read(f, binary.BigEndian, &dur)
+
+		marks[i] = PlaylistMark{
+			MarkType:    markType,
+			PlayItemRef: playItemRef,
+			Timestamp:   ts,
+			Duration:    dur,
+		}
+	}
+	return marks, nil
 }
 
 func LoadAllPlaylists(bdmvRoot string) ([]*Playlist, error) {
@@ -170,7 +245,7 @@ func LoadAllPlaylists(bdmvRoot string) ([]*Playlist, error) {
 	return playlists, nil
 }
 
-func LoadEpisodePlaylists(bdmvRoot string, minDur, maxDur int) ([]*Playlist, error) {
+func LoadEpisodePlaylists(bdmvRoot string, minDur, maxDur, clusterDur int) ([]*Playlist, error) {
 	all, err := LoadAllPlaylists(bdmvRoot)
 	if err != nil {
 		return nil, err
@@ -178,16 +253,38 @@ func LoadEpisodePlaylists(bdmvRoot string, minDur, maxDur int) ([]*Playlist, err
 
 	var episodes []*Playlist
 	seen := map[string]bool{}
+
 	for _, pl := range all {
-		if !pl.IsLikelyEpisode(bdmvRoot, minDur, maxDur) {
-			continue
-		}
 		clip := pl.PrimaryClip()
-		if seen[clip] {
+		if clip == "" || seen[clip] {
 			continue
 		}
+
+		dur := pl.EstimateDuration(bdmvRoot)
+		if dur < minViableDuration {
+			continue
+		}
+
+		episodeCount := pl.EstimateEpisodeCount(bdmvRoot, clusterDur)
+		perEpisodeDur := dur / episodeCount
+
+		if perEpisodeDur < minDur || perEpisodeDur > maxDur {
+			continue
+		}
+
 		seen[clip] = true
-		episodes = append(episodes, pl)
+
+		if episodeCount > 1 {
+			for i := 0; i < episodeCount; i++ {
+				episodes = append(episodes, &Playlist{
+					Name:      fmt.Sprintf("%s[%d]", pl.Name, i+1),
+					PlayItems: pl.PlayItems,
+					Marks:     pl.Marks,
+				})
+			}
+		} else {
+			episodes = append(episodes, pl)
+		}
 	}
 
 	return episodes, nil

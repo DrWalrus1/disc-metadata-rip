@@ -117,14 +117,22 @@ func ParseDiscTitle(title string) DiscInfo {
 	return info
 }
 
-func EpisodesForDisc(season *TMDBSeason, disc, numEpisodes int) []TMDBEpisode {
-	startIdx := (disc - 1) * numEpisodes
+// EpisodesForDisc returns the slice of TMDB episodes starting at
+// startEpisode (1-indexed). If startEpisode is 0, starts from episode 1.
+func EpisodesForDisc(season *TMDBSeason, startEpisode, numEpisodes int) []TMDBEpisode {
+	startIdx := 0
+	if startEpisode > 1 {
+		startIdx = startEpisode - 1
+	}
+
 	if startIdx >= len(season.Episodes) {
 		return nil
 	}
+
 	end := startIdx + numEpisodes
 	if end > len(season.Episodes) {
 		end = len(season.Episodes)
 	}
+
 	return season.Episodes[startIdx:end]
 }
