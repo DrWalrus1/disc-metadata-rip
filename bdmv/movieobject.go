@@ -1,4 +1,4 @@
-package main
+package bdmv
 
 import (
 	"encoding/binary"
@@ -7,11 +7,13 @@ import (
 	"os"
 )
 
+// MovieObjectBDMV represents the parsed contents of a MovieObject.bdmv file.
 type MovieObjectBDMV struct {
 	Version string
 	Objects []MovieObject
 }
 
+// MovieObject represents a single navigation object.
 type MovieObject struct {
 	ResumeIntentionFlag bool
 	MenuCallMask        bool
@@ -19,12 +21,14 @@ type MovieObject struct {
 	Commands            []NavigationCommand
 }
 
+// NavigationCommand represents a single HDMV navigation command.
 type NavigationCommand struct {
 	Instruction uint32
 	Destination uint32
 	Source      uint32
 }
 
+// ParseMovieObject parses the MovieObject.bdmv file at the given path.
 func ParseMovieObject(path string) (*MovieObjectBDMV, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -37,7 +41,7 @@ func ParseMovieObject(path string) (*MovieObjectBDMV, error) {
 	io.ReadFull(f, typeInd)
 	io.ReadFull(f, version)
 
-	if string(typeInd) != typeIndicatorMOBJ {
+	if string(typeInd) != TypeIndicatorMOBJ {
 		return nil, fmt.Errorf("not a MovieObject.bdmv file (got %q)", typeInd)
 	}
 
@@ -54,7 +58,6 @@ func ParseMovieObject(path string) (*MovieObjectBDMV, error) {
 	var numObjects uint16
 	binary.Read(f, binary.BigEndian, &numObjects)
 
-	mobj.Objects = nil
 	for {
 		obj, err := readMovieObject(f)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {

@@ -1,4 +1,4 @@
-package main
+package env
 
 import (
 	"bufio"
@@ -7,13 +7,14 @@ import (
 	"strings"
 )
 
-// loadEnv reads a .env file and sets any unset environment variables.
+// Load reads a .env file and sets any unset environment variables.
 // Existing environment variables are not overwritten.
-func loadEnv(path string) error {
+// Returns nil if the file does not exist.
+func Load(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // .env is optional
+			return nil
 		}
 		return fmt.Errorf("opening .env: %w", err)
 	}
@@ -37,7 +38,6 @@ func loadEnv(path string) error {
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
 
-		// Strip optional surrounding quotes
 		if len(value) >= 2 {
 			if (value[0] == '"' && value[len(value)-1] == '"') ||
 				(value[0] == '\'' && value[len(value)-1] == '\'') {
@@ -45,7 +45,6 @@ func loadEnv(path string) error {
 			}
 		}
 
-		// Don't overwrite existing env vars
 		if os.Getenv(key) == "" {
 			os.Setenv(key, value)
 		}

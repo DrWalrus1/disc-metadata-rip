@@ -1,4 +1,4 @@
-package main
+package bdmv
 
 import (
 	"encoding/binary"
@@ -10,12 +10,14 @@ import (
 	"strings"
 )
 
+// Playlist represents a parsed .mpls playlist file.
 type Playlist struct {
 	Name      string
 	PlayItems []PlayItem
 	Marks     []PlaylistMark
 }
 
+// PlayItem represents a single play item within a playlist.
 type PlayItem struct {
 	ClipName string
 	InTime   uint32
@@ -23,6 +25,7 @@ type PlayItem struct {
 	Duration int // seconds
 }
 
+// PlaylistMark represents a chapter mark within a playlist.
 type PlaylistMark struct {
 	MarkType    uint8
 	PlayItemRef uint16
@@ -30,7 +33,7 @@ type PlaylistMark struct {
 	Duration    uint32
 }
 
-// TotalDuration returns the sum of all PlayItem durations.
+// TotalDuration returns the sum of all PlayItem durations in seconds.
 func (p *Playlist) TotalDuration() int {
 	total := 0
 	for _, item := range p.PlayItems {
@@ -54,7 +57,7 @@ func (p *Playlist) EpisodeDuration() int {
 	return total
 }
 
-// PrimaryClip returns the first clip with a duration over 60 seconds.
+// PrimaryClip returns the name of the first clip with duration over 60 seconds.
 func (p *Playlist) PrimaryClip() string {
 	for _, item := range p.PlayItems {
 		if item.Duration >= 60 {
@@ -67,58 +70,41 @@ func (p *Playlist) PrimaryClip() string {
 	return ""
 }
 
-// EstimateDuration estimates total stream duration from file size.
-func (p *Playlist) EstimateDuration(bdmvRoot string) int {
+// StreamPath returns the full path to the primary clip's .m2ts file.
+func (p *Playlist) StreamPath(bdmvRoot string) string {
 	clip := p.PrimaryClip()
 	if clip == "" {
+		return ""
+	}
+	return filepath.Join(bdmvRoot, "STREAM", clip+".m2ts")
+}
+
+// EstimateDuration estimates total stream duration from file size at
+// the standard Blu-ray bitrate.
+func (p *Playlist) EstimateDuration(bdmvRoot string, bitrate int) int {
+	path := p.StreamPath(bdmvRoot)
+	if path == "" {
 		return 0
 	}
-	path := filepath.Join(bdmvRoot, "STREAM", clip+".m2ts")
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0
 	}
-	return int(info.Size() * 8 / estimatedBitrate)
+	return int(info.Size() * 8 / int64(bitrate))
 }
 
-// EstimateEpisodeCount checks if the stream duration is a near-integer
-// multiple of the cluster episode duration, indicating a combined stream.
-func (p *Playlist) EstimateEpisodeCount(bdmvRoot string, clusterDur int) int {
-	if clusterDur <= 0 {
-		return 1
-	}
-
-	totalDur := p.EstimateDuration(bdmvRoot)
-	if totalDur < minViableDuration {
-		return 1
-	}
-
-	ratio := float64(totalDur) / float64(clusterDur)
-	rounded := int(ratio + 0.5)
-
-	if rounded < 1 || rounded > maxEpisodesPerStream {
-		return 1
-	}
-
-	// Relative tolerance: error as fraction of the multiple,
-	// consistent with removeMultiples approach
-	if absFloat(ratio-float64(rounded))/float64(rounded) > episodeRatioTolerance {
-		return 1
-	}
-
-	return rounded
+// PTSDuration calculates duration in seconds from two PTS timestamps.
+// uint32 subtraction handles PTS wraparound at 0xFFFFFFFF naturally.
+func PTSDuration(in, out uint32) int {
+	return int((out - in) / PTSClock)
 }
 
+// FormatDuration formats a duration in seconds as "M:SS".
 func FormatDuration(secs int) string {
 	return fmt.Sprintf("%d:%02d", secs/60, secs%60)
 }
 
-// ptsDuration calculates duration in seconds from two PTS timestamps.
-// uint32 subtraction handles PTS wraparound at 0xFFFFFFFF naturally.
-func ptsDuration(in, out uint32) int {
-	return int((out - in) / ptsClock)
-}
-
+// ParsePlaylist parses the .mpls file at the given path.
 func ParsePlaylist(path string) (*Playlist, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -128,11 +114,10 @@ func ParsePlaylist(path string) (*Playlist, error) {
 
 	typeInd := make([]byte, 4)
 	io.ReadFull(f, typeInd)
-	if string(typeInd) != typeIndicatorMPLS {
+	if string(typeInd) != TypeIndicatorMPLS {
 		return nil, fmt.Errorf("not an mpls file")
 	}
 
-	// Read PlayList and PlayListMark offsets from header
 	f.Seek(playlistOffsetAddr, io.SeekStart)
 	var playlistOffset uint32
 	binary.Read(f, binary.BigEndian, &playlistOffset)
@@ -171,7 +156,7 @@ func ParsePlaylist(path string) (*Playlist, error) {
 			ClipName: string(clipName[:playItemClipNameUsed]),
 			InTime:   inTime,
 			OutTime:  outTime,
-			Duration: ptsDuration(inTime, outTime),
+			Duration: PTSDuration(inTime, outTime),
 		})
 
 		// Jump to next PlayItem using itemLen — handles variable-length
@@ -179,7 +164,6 @@ func ParsePlaylist(path string) (*Playlist, error) {
 		f.Seek(itemStart+2+int64(itemLen), io.SeekStart)
 	}
 
-	// Parse PlayListMark section
 	if markOffset > 0 {
 		pl.Marks, _ = parsePlaylistMarks(f, markOffset)
 	}
@@ -222,6 +206,7 @@ func parsePlaylistMarks(f *os.File, markOffset uint32) ([]PlaylistMark, error) {
 	return marks, nil
 }
 
+// LoadAllPlaylists loads and parses all .mpls files in the PLAYLIST directory.
 func LoadAllPlaylists(bdmvRoot string) ([]*Playlist, error) {
 	pattern := filepath.Join(bdmvRoot, "PLAYLIST", "*.mpls")
 	files, err := filepath.Glob(pattern)
@@ -243,49 +228,4 @@ func LoadAllPlaylists(bdmvRoot string) ([]*Playlist, error) {
 	})
 
 	return playlists, nil
-}
-
-func LoadEpisodePlaylists(bdmvRoot string, minDur, maxDur, clusterDur int) ([]*Playlist, error) {
-	all, err := LoadAllPlaylists(bdmvRoot)
-	if err != nil {
-		return nil, err
-	}
-
-	var episodes []*Playlist
-	seen := map[string]bool{}
-
-	for _, pl := range all {
-		clip := pl.PrimaryClip()
-		if clip == "" || seen[clip] {
-			continue
-		}
-
-		dur := pl.EstimateDuration(bdmvRoot)
-		if dur < minViableDuration {
-			continue
-		}
-
-		episodeCount := pl.EstimateEpisodeCount(bdmvRoot, clusterDur)
-		perEpisodeDur := dur / episodeCount
-
-		if perEpisodeDur < minDur || perEpisodeDur > maxDur {
-			continue
-		}
-
-		seen[clip] = true
-
-		if episodeCount > 1 {
-			for i := 0; i < episodeCount; i++ {
-				episodes = append(episodes, &Playlist{
-					Name:      fmt.Sprintf("%s[%d]", pl.Name, i+1),
-					PlayItems: pl.PlayItems,
-					Marks:     pl.Marks,
-				})
-			}
-		} else {
-			episodes = append(episodes, pl)
-		}
-	}
-
-	return episodes, nil
 }

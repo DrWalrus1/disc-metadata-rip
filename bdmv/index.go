@@ -1,4 +1,4 @@
-package main
+package bdmv
 
 import (
 	"encoding/binary"
@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 )
 
+// IndexBDMV represents the parsed contents of an index.bdmv file.
 type IndexBDMV struct {
 	Version       string
 	AppInfoOffset uint32
@@ -17,21 +18,25 @@ type IndexBDMV struct {
 	Titles        []TitleEntry
 }
 
+// TitleEntry represents a single title in the index.
 type TitleEntry struct {
 	ObjectType  uint8
 	AccessType  uint8
 	ObjectIDRef uint16
 }
 
+// IsHDMV returns true if the title uses HDMV navigation.
 func (t TitleEntry) IsHDMV() bool {
-	return t.ObjectType&objectTypeMask == objectTypeHDMV ||
-		t.ObjectType == objectTypeHDMVFirstPlay
+	return t.ObjectType&ObjectTypeMask == ObjectTypeHDMV ||
+		t.ObjectType == ObjectTypeHDMVFirstPlay
 }
 
+// IsBDJ returns true if the title uses BD-J (Java) navigation.
 func (t TitleEntry) IsBDJ() bool {
-	return t.ObjectType&objectTypeMask == objectTypeBDJ
+	return t.ObjectType&ObjectTypeMask == ObjectTypeBDJ
 }
 
+// PlaylistPath returns the full path to the playlist file for this title.
 func (t TitleEntry) PlaylistPath(bdmvRoot string) string {
 	if t.IsHDMV() {
 		return filepath.Join(bdmvRoot, "PLAYLIST", fmt.Sprintf("%05d.mpls", t.ObjectIDRef))
@@ -39,6 +44,7 @@ func (t TitleEntry) PlaylistPath(bdmvRoot string) string {
 	return ""
 }
 
+// ParseIndex parses the index.bdmv file at the given path.
 func ParseIndex(path string) (*IndexBDMV, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -51,7 +57,7 @@ func ParseIndex(path string) (*IndexBDMV, error) {
 	io.ReadFull(f, typeInd)
 	io.ReadFull(f, version)
 
-	if string(typeInd) != typeIndicatorINDX {
+	if string(typeInd) != TypeIndicatorINDX {
 		return nil, fmt.Errorf("not an index.bdmv file (got %q)", typeInd)
 	}
 
@@ -107,13 +113,13 @@ func readTitleEntry(r io.Reader) (TitleEntry, error) {
 		AccessType: buf[1],
 	}
 
-	switch buf[0] & objectTypeMask {
-	case objectTypeHDMV:
+	switch buf[0] & ObjectTypeMask {
+	case ObjectTypeHDMV:
 		refStr := string(buf[6:11])
 		var val uint16
 		fmt.Sscanf(refStr, "%d", &val)
 		entry.ObjectIDRef = val
-	case objectTypeBDJ:
+	case ObjectTypeBDJ:
 		entry.ObjectIDRef = binary.BigEndian.Uint16(buf[6:8])
 	}
 
