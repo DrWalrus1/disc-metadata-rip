@@ -1,9 +1,48 @@
 package tmdb
 
+import "strings"
+
 // Show represents a TV show search result.
 type Show struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
+}
+
+// SeasonSummary is the season entry returned in show details.
+type SeasonSummary struct {
+	SeasonNumber int    `json:"season_number"`
+	Name         string `json:"name"`
+}
+
+// ShowDetails holds full show metadata including the season list.
+type ShowDetails struct {
+	ID      int             `json:"id"`
+	Name    string          `json:"name"`
+	Seasons []SeasonSummary `json:"seasons"`
+}
+
+// MatchSeason returns the season number whose name best matches discTitle,
+// using a case-insensitive substring search. Generic "Season N" names are
+// skipped. Returns 0 if no named season matches.
+func MatchSeason(discTitle string, seasons []SeasonSummary) int {
+	lower := strings.ToLower(discTitle)
+	bestLen, bestSeason := 0, 0
+	for _, s := range seasons {
+		name := strings.TrimSpace(s.Name)
+		if name == "" || s.SeasonNumber == 0 {
+			continue
+		}
+		// Skip generic "Season N" names — they won't appear in disc titles.
+		lname := strings.ToLower(name)
+		if strings.HasPrefix(lname, "season ") {
+			continue
+		}
+		if strings.Contains(lower, lname) && len(name) > bestLen {
+			bestLen = len(name)
+			bestSeason = s.SeasonNumber
+		}
+	}
+	return bestSeason
 }
 
 // Season represents a TV season with its episodes.

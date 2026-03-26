@@ -82,6 +82,21 @@ func (c *Client) SearchMovie(query string) ([]Movie, error) {
 	return result.Results, nil
 }
 
+// GetShow fetches full show details including the season list.
+func (c *Client) GetShow(showID int) (*ShowDetails, error) {
+	resp, err := c.get(fmt.Sprintf("/tv/%d", showID))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var d ShowDetails
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
 // GetMovie fetches full details for a movie by ID.
 func (c *Client) GetMovie(movieID int) (*MovieDetails, error) {
 	resp, err := c.get(fmt.Sprintf("/movie/%d", movieID))

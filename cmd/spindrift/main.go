@@ -200,12 +200,23 @@ func runTV(
 		fmt.Printf("TMDB Match: %s (ID: %d)\n\n", show.Name, show.ID)
 	}
 
-	season, err := client.GetSeason(show.ID, info.Season)
+	seasonNum := info.Season
+	if details, err := client.GetShow(show.ID); err == nil {
+		if matched := tmdb.MatchSeason(info.ShowName, details.Seasons); matched > 0 {
+			seasonNum = matched
+			if !robotMode {
+				fmt.Printf("Season matched by name: %d\n", seasonNum)
+			}
+		}
+	}
+
+	season, err := client.GetSeason(show.ID, seasonNum)
 	if err != nil {
 		return fmt.Errorf("TMDB season fetch: %w", err)
 	}
 
 	tmdbEps := tmdb.EpisodesForDisc(season, startEpisode, len(episodes))
+	info.Season = seasonNum
 	printEpisodes(episodes, tmdbEps, info, show.ID, bdmvRoot, clusterDur, robotMode)
 	return nil
 }
