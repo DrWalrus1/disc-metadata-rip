@@ -121,22 +121,12 @@ func runMovie(
 	clusterDur int,
 	robotMode bool,
 ) error {
-	var movies []tmdb.Movie
-	for query := info.ShowName; ; query = dropLastWord(query) {
-		if query == "" {
-			break
-		}
-		var err error
-		movies, err = client.SearchMovie(query)
-		if err != nil {
-			return fmt.Errorf("TMDB movie search: %w", err)
-		}
-		if len(movies) > 0 {
-			if !robotMode && query != info.ShowName {
-				fmt.Printf("No results for full title; matched using %q\n", query)
-			}
-			break
-		}
+	movies, matchedQuery, err := client.SmartSearchMovie(info.ShowName)
+	if err != nil {
+		return fmt.Errorf("TMDB movie search: %w", err)
+	}
+	if !robotMode && matchedQuery != "" && matchedQuery != info.ShowName {
+		fmt.Printf("No results for full title; matched using %q\n", matchedQuery)
 	}
 	if len(movies) == 0 {
 		if !robotMode {
@@ -170,22 +160,12 @@ func runTV(
 	startEpisode int,
 	robotMode bool,
 ) error {
-	var shows []tmdb.Show
-	for query := info.ShowName; ; query = dropLastWord(query) {
-		if query == "" {
-			break
-		}
-		var err error
-		shows, err = client.SearchTV(query)
-		if err != nil {
-			return fmt.Errorf("TMDB search: %w", err)
-		}
-		if len(shows) > 0 {
-			if !robotMode && query != info.ShowName {
-				fmt.Printf("No results for full title; matched using %q\n", query)
-			}
-			break
-		}
+	shows, matchedQuery, err := client.SmartSearchTV(info.ShowName)
+	if err != nil {
+		return fmt.Errorf("TMDB search: %w", err)
+	}
+	if !robotMode && matchedQuery != "" && matchedQuery != info.ShowName {
+		fmt.Printf("No results for full title; matched using %q\n", matchedQuery)
 	}
 	if len(shows) == 0 {
 		if !robotMode {
@@ -200,19 +180,12 @@ func runTV(
 		fmt.Printf("TMDB Match: %s (ID: %d)\n\n", show.Name, show.ID)
 	}
 
-	seasonNum := info.Season
-	if details, err := client.GetShow(show.ID); err == nil {
-		if matched := tmdb.MatchSeason(info.ShowName, details.Seasons); matched > 0 {
-			seasonNum = matched
-			if !robotMode {
-				fmt.Printf("Season matched by name: %d\n", seasonNum)
-			}
-		}
-	}
-
-	season, err := client.GetSeason(show.ID, seasonNum)
+	season, seasonNum, err := client.SmartGetSeason(show.ID, info.ShowName, info.Season)
 	if err != nil {
 		return fmt.Errorf("TMDB season fetch: %w", err)
+	}
+	if !robotMode && seasonNum != info.Season {
+		fmt.Printf("Season matched by name: %d\n", seasonNum)
 	}
 
 	tmdbEps := tmdb.EpisodesForDisc(season, startEpisode, len(episodes))
@@ -424,17 +397,6 @@ func printEpisodesNoTMDB(
 			pl.ChapterCount(),
 		)
 	}
-}
-
-// dropLastWord removes the last whitespace-delimited word from s.
-// Returns an empty string when no words remain.
-func dropLastWord(s string) string {
-	s = strings.TrimSpace(s)
-	i := strings.LastIndex(s, " ")
-	if i < 0 {
-		return ""
-	}
-	return s[:i]
 }
 
 func parseArgs() (discArg string, startEpisode int, robotMode bool) {
