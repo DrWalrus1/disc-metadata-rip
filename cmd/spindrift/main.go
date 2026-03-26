@@ -18,6 +18,7 @@ type trackResult struct {
 	Playlist      string `json:"playlist"`
 	Clip          string `json:"clip,omitempty"`
 	Type          string `json:"type"`
+	DiscTitle     string `json:"disc_title"`
 	Episode       string `json:"episode,omitempty"`
 	Title         string `json:"title,omitempty"`
 	Duration      string `json:"duration"`
@@ -128,7 +129,7 @@ func runMovie(
 		if !robotMode {
 			fmt.Printf("No TMDB movie results found for %q\n", info.ShowName)
 		}
-		printMovieNoTMDB(episodes, bdmvRoot, clusterDur, robotMode)
+		printMovieNoTMDB(episodes, info, bdmvRoot, clusterDur, robotMode)
 		return nil
 	}
 
@@ -143,7 +144,7 @@ func runMovie(
 			details.Title, movie.ID, details.Runtime)
 	}
 
-	printMovie(episodes[0], details, movie.ID, bdmvRoot, clusterDur, robotMode)
+	printMovie(episodes[0], details, movie.ID, info, bdmvRoot, clusterDur, robotMode)
 	return nil
 }
 
@@ -187,6 +188,7 @@ func printMovie(
 	pl *bdmv.Playlist,
 	details *tmdb.MovieDetails,
 	tmdbID int,
+	info disc.DiscInfo,
 	bdmvRoot string,
 	clusterDur int,
 	robotMode bool,
@@ -199,6 +201,7 @@ func printMovie(
 			Playlist:     pl.Name,
 			Clip:         pl.PrimaryClip(),
 			Type:         "movie",
+			DiscTitle:    info.ShowName,
 			Title:        details.Title,
 			Duration:     bdmv.FormatDuration(dur / count),
 			TMDBDuration: bdmv.FormatDuration(details.Runtime * 60),
@@ -222,6 +225,7 @@ func printMovie(
 
 func printMovieNoTMDB(
 	episodes []*bdmv.Playlist,
+	info disc.DiscInfo,
 	bdmvRoot string,
 	clusterDur int,
 	robotMode bool,
@@ -232,11 +236,12 @@ func printMovieNoTMDB(
 			dur := pl.EstimateDuration(bdmvRoot, disc.DefaultBitrate)
 			count := disc.EstimateEpisodeCount(pl, bdmvRoot, clusterDur)
 			out = append(out, trackResult{
-				Playlist: pl.Name,
-				Clip:     pl.PrimaryClip(),
-				Type:     "movie",
-				Duration: bdmv.FormatDuration(dur / count),
-				Chapters: pl.ChapterCount(),
+				Playlist:  pl.Name,
+				Clip:      pl.PrimaryClip(),
+				Type:      "movie",
+				DiscTitle: info.ShowName,
+				Duration:  bdmv.FormatDuration(dur / count),
+				Chapters:  pl.ChapterCount(),
 			})
 		}
 		json.NewEncoder(os.Stdout).Encode(out)
@@ -272,13 +277,14 @@ func printEpisodes(
 			dur := pl.EstimateDuration(bdmvRoot, disc.DefaultBitrate)
 			count := disc.EstimateEpisodeCount(pl, bdmvRoot, clusterDur)
 			r := trackResult{
-				Playlist: pl.Name,
-				Clip:     pl.PrimaryClip(),
-				Type:     "tv",
-				Episode:  fmt.Sprintf("S%02dE??", info.Season),
-				Duration: bdmv.FormatDuration(dur / count),
-				Chapters: pl.ChapterCount(),
-				TMDBID:   fmt.Sprintf("%d", showID),
+				Playlist:  pl.Name,
+				Clip:      pl.PrimaryClip(),
+				Type:      "tv",
+				DiscTitle: info.ShowName,
+				Episode:   fmt.Sprintf("S%02dE??", info.Season),
+				Duration:  bdmv.FormatDuration(dur / count),
+				Chapters:  pl.ChapterCount(),
+				TMDBID:    fmt.Sprintf("%d", showID),
 			}
 			if i < len(tmdbEps) {
 				ep := tmdbEps[i]
@@ -347,12 +353,13 @@ func printEpisodesNoTMDB(
 				epNum = i + 1
 			}
 			out = append(out, trackResult{
-				Playlist: pl.Name,
-				Clip:     pl.PrimaryClip(),
-				Type:     "tv",
-				Episode:  fmt.Sprintf("S%02dE%02d", info.Season, epNum),
-				Duration: bdmv.FormatDuration(dur / count),
-				Chapters: pl.ChapterCount(),
+				Playlist:  pl.Name,
+				Clip:      pl.PrimaryClip(),
+				Type:      "tv",
+				DiscTitle: info.ShowName,
+				Episode:   fmt.Sprintf("S%02dE%02d", info.Season, epNum),
+				Duration:  bdmv.FormatDuration(dur / count),
+				Chapters:  pl.ChapterCount(),
 			})
 		}
 		json.NewEncoder(os.Stdout).Encode(out)
