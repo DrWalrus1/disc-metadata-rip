@@ -486,6 +486,19 @@ func LoadEpisodePlaylists(bdmvRoot string, minDur, maxDur, clusterDur int) ([]*b
 
 		seen[clip] = true
 
+		// Detect commentary: a non-primary clip in this playlist is already
+		// a known episode clip, meaning this playlist overlays commentary
+		// audio on top of a main episode's video stream.
+		note := ""
+		noteClip := ""
+		for _, item := range pl.PlayItems {
+			if item.ClipName != clip && seen[item.ClipName] {
+				note = "commentary"
+				noteClip = item.ClipName
+				break
+			}
+		}
+
 		if episodeCount > 1 {
 			for i := range episodeCount {
 				episodes = append(episodes, &bdmv.Playlist{
@@ -494,9 +507,13 @@ func LoadEpisodePlaylists(bdmvRoot string, minDur, maxDur, clusterDur int) ([]*b
 					Marks:        pl.Marks,
 					EpisodeCount: episodeCount,
 					EpisodeIndex: i + 1,
+					Note:         note,
+					NoteClip:     noteClip,
 				})
 			}
 		} else {
+			pl.Note = note
+			pl.NoteClip = noteClip
 			episodes = append(episodes, pl)
 		}
 	}

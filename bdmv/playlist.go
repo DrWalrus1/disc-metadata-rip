@@ -15,8 +15,10 @@ type Playlist struct {
 	Name         string
 	PlayItems    []PlayItem
 	Marks        []PlaylistMark
-	EpisodeCount int // >1 when this playlist is shared by multiple episodes
-	EpisodeIndex int // 1-based position within EpisodeCount
+	EpisodeCount int    // >1 when this playlist is shared by multiple episodes
+	EpisodeIndex int    // 1-based position within EpisodeCount
+	Note         string // optional note, e.g. "commentary"
+	NoteClip     string // for commentary: the episode clip this overlays
 }
 
 // ChapterCount returns the total number of marks in this playlist assigned

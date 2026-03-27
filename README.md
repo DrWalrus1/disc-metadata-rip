@@ -11,7 +11,9 @@ It works entirely from the disc's filesystem without needing to decrypt or demux
 - Infers episode duration bounds from stream file sizes using cluster analysis
 - Detects combined streams (e.g. a 4-part finale encoded as one file)
 - Distinguishes TV series from movies automatically
+- Detects commentary tracks and links them to their source episodes
 - Looks up episode and movie titles via the TMDB API
+- Outputs structured JSON for programmatic use (`-r` robot mode)
 - Usable as both a standalone CLI tool and a Go library
 
 ## Installation
@@ -37,13 +39,22 @@ spindrift /Volumes/Avatar_Book_2_Disc_1
 # With episode offset for later discs in a set
 spindrift /Volumes/Avatar_Book_2_Disc_2 --start-episode 9
 spindrift /Volumes/Avatar_Book_2_Disc_3 --start-episode 17
+
+# JSON output for programmatic use
+spindrift -r /Volumes/Avatar_Book_2_Disc_1
 ```
+
+### Flags
+
+| Flag | Description |
+|---|---|
+| `-r` | Robot mode: output JSON instead of a human-readable table |
+| `--start-episode N` | Episode number offset for later discs in a multi-disc set |
 
 ### Example output — TV series
 ```
-Found disc: /Volumes/Avatar_Book_2_Disc_1
-Disc Title: Avatar: The Last Airbender Book Two: Earth Disc 1
-Show:       Avatar: The Last Airbender
+Found disc: /Volumes/Avatar_Book_2_Disc_1/BDMV
+Disc Title: Avatar: The Last Airbender
 Season:     2
 Disc:       1
 
@@ -52,29 +63,58 @@ Found 8 episodes on disc
 
 TMDB Match: Avatar: The Last Airbender (ID: 246)
 
-Ep     Playlist       Clip       Duration     Title
-------------------------------------------------------------------------
-S02E01 01606          01090      22:29        The Avatar State
-S02E02 01607          01091      22:18        The Cave of Two Lovers
-S02E03 01608          01092      22:32        Return to Omashu
-S02E04 01623          01099      21:12        The Swamp
-S02E05 01624          01100      21:13        Avatar Day
-S02E06 01625          01101      21:13        The Blind Bandit
-S02E07 01626          01102      21:11        Zuko Alone
-S02E08 01627          01103      21:08        The Chase
+Ep     Playlist       Clip       Duration     Chapters   Episode ID   Note                   Title
+---------------------------------------------------------------------------------------------------------------------
+S02E01 01606          01090      22:29        5          1234567                             The Avatar State
+S02E02 01607          01091      22:18        5          1234568                             The Cave of Two Lovers
+...
+S02E01 01650          01090      22:29        5                       commentary for S02E01
 ```
 
 ### Example output — Movie
 ```
-Found disc: /Volumes/PRINCESS MONONOKE
+Found disc: /Volumes/PRINCESS MONONOKE/BDMV
 Disc Title: Princess Mononoke
 Detected: Movie
 
 TMDB Match: Princess Mononoke (ID: 128, Runtime: 134 min)
 
-Type       Playlist     Duration     Title
--------------------------------------------------------
-Movie      00009        133:35       Princess Mononoke
+Type       Playlist     Duration     Chapters   Title
+-----------------------------------------------------------------
+Movie      00009        133:35       12         Princess Mononoke
+```
+
+### JSON output (`-r`)
+
+Each element in the output array corresponds to one playlist. Fields are omitted when empty.
+
+```json
+[
+  {
+    "playlist": "01606",
+    "clip": "01090",
+    "type": "tv",
+    "disc_title": "Avatar: The Last Airbender",
+    "episode": "S02E01",
+    "title": "The Avatar State",
+    "duration": "22:29",
+    "tmdb_duration": "22:00",
+    "chapters": 5,
+    "tmdb_id": "246",
+    "tmdb_episode_id": "1234567"
+  },
+  {
+    "playlist": "01650",
+    "clip": "01090",
+    "type": "tv",
+    "disc_title": "Avatar: The Last Airbender",
+    "episode": "S02E01",
+    "duration": "22:29",
+    "chapters": 5,
+    "tmdb_id": "246",
+    "note": "commentary for S02E01"
+  }
+]
 ```
 
 ## Configuration
@@ -112,28 +152,83 @@ if err != nil {
 fmt.Println(d.Info.ShowName) // "Avatar: The Last Airbender"
 fmt.Println(d.Info.Season)   // 2
 fmt.Println(d.Info.Disc)     // 1
+fmt.Println(d.Info.IsMovie)  // false
+fmt.Println(d.Info.IsSeries) // true
 
 // Infer episode bounds and load episodes
 minDur, maxDur, clusterDur := disc.InferEpisodeBounds(d.BDMVRoot)
 episodes, err := disc.LoadEpisodePlaylists(d.BDMVRoot, minDur, maxDur, clusterDur)
 
 for _, ep := range episodes {
-    fmt.Printf("%s → %s (%s)\n",
+    fmt.Printf("%s → %s (%s)",
         ep.Name,
         ep.PrimaryClip(),
         bdmv.FormatDuration(ep.EstimateDuration(d.BDMVRoot, disc.DefaultBitrate)),
     )
+    if ep.Note != "" {
+        fmt.Printf(" [%s, source clip: %s]", ep.Note, ep.NoteClip)
+    }
+    fmt.Println()
 }
 
-// Look up episode titles
-client := tmdb.New(os.Getenv("TMDB_API_KEY"))
-shows, err := client.SearchTV(d.Info.ShowName)
-season, err := client.GetSeason(shows[0].ID, d.Info.Season)
-tmdbEps := tmdb.EpisodesForDisc(season, 0, len(episodes))
+// Detect whether the disc is a movie
+d.Info.DetectMovie(len(episodes))
 
+// Look up episode titles via TMDB
+client := tmdb.New(os.Getenv("TMDB_API_KEY"))
+
+// Smart search degrades the query word-by-word until results are found
+shows, matchedQuery, err := client.SmartSearchTV(d.Info.ShowName)
+
+// Fetch season, matching by name if the disc title contains one (e.g. "Book Two")
+season, seasonNum, err := client.SmartGetSeason(shows[0].ID, d.Info.ShowName, d.Info.Season)
+
+tmdbEps := tmdb.EpisodesForDisc(season, 0, len(episodes))
 for i, ep := range episodes {
+    if ep.Note != "" {
+        continue // skip commentary tracks
+    }
     fmt.Printf("%s: %s\n", ep.Name, tmdbEps[i].Name)
 }
+
+// Movie workflow
+movies, _, err := client.SmartSearchMovie(d.Info.ShowName)
+details, err := client.GetMovie(movies[0].ID)
+fmt.Printf("%s (%d min)\n", details.Title, details.Runtime)
+```
+
+### Disc auto-detection
+
+```go
+// Find all mounted Blu-ray discs
+roots, err := disc.FindBDMVRoots()
+
+// Or let the user pick interactively (prompts if multiple discs found)
+bdmvRoot, err := disc.SelectBDMV("") // "" = auto-detect
+bdmvRoot, err := disc.SelectBDMV("/Volumes/MyDisc") // explicit path
+```
+
+### Low-level access
+
+```go
+// Load all playlists from a disc
+playlists, err := bdmv.LoadAllPlaylists(bdmvRoot)
+
+// Parse a single playlist file
+pl, err := bdmv.ParsePlaylist("/path/to/PLAYLIST/01606.mpls")
+
+// Raw stream duration analysis
+durations := disc.StreamDurations(bdmvRoot)
+minDur, maxDur, center := disc.DominantCluster(durations)
+
+// Clip bitrate from CLPI file (bytes/sec); 0 if unavailable
+rate := bdmv.ClipBitrate(bdmvRoot, "01090")
+
+// Parse disc metadata from a title string directly
+info := disc.ParseDiscInfo("Avatar: The Last Airbender Book Two: Earth Disc 1")
+// info.ShowName == "Avatar: The Last Airbender"
+// info.Season   == 2
+// info.Disc     == 1
 ```
 
 ## Packages
@@ -149,7 +244,7 @@ for i, ep := range episodes {
 
 ### Episode detection
 
-Spindrift avoids decrypting or reading video streams directly. Instead it estimates content duration from stream file sizes at a standard Blu-ray bitrate (~35 Mbps).
+Spindrift avoids decrypting or reading video streams directly. Instead it estimates content duration from stream file sizes at a standard Blu-ray bitrate (~35 Mbps), using per-clip bitrates from `.clpi` files when available.
 
 It then uses a **dominant cluster algorithm** to find the most likely episode duration on the disc:
 
@@ -160,7 +255,11 @@ It then uses a **dominant cluster algorithm** to find the most likely episode du
 
 ### Multi-episode streams
 
-Some discs encode multiple episodes into a single stream file. Spindrift detects these by checking if a stream's estimated duration is a near-integer multiple of the cluster episode duration, then expands that stream into the appropriate number of episode entries.
+Some discs encode multiple episodes into a single stream file. Spindrift detects these by checking if a stream's estimated duration is a near-integer multiple of the cluster episode duration, then expands that stream into the appropriate number of episode entries. As a fallback, chapter mark spacing is used to infer episode boundaries when duration estimation is insufficient.
+
+### Commentary track detection
+
+When loading playlists, Spindrift tracks which video clips have already been assigned to an episode. If a playlist's primary clip is new but one of its other clips is a previously seen episode clip, the playlist is marked as a commentary track. Its `Note` field is set to `"commentary"` and `NoteClip` records the clip ID of the underlying episode.
 
 ### Movie detection
 

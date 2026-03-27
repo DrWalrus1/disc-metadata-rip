@@ -26,6 +26,7 @@ type trackResult struct {
 	Chapters      int    `json:"chapters"`
 	TMDBID        string `json:"tmdb_id"`
 	TMDBEpisodeID string `json:"tmdb_episode_id,omitempty"`
+	Note          string `json:"note,omitempty"`
 }
 
 func run(bdmvRoot string, startEpisode int, robotMode bool) error {
@@ -281,11 +282,35 @@ func printEpisodes(
 	clusterDur int,
 	robotMode bool,
 ) {
+	// Build clip → episode label map from main (non-commentary) episodes.
+	clipEpisode := map[string]string{}
+	{
+		idx := 0
+		for _, pl := range episodes {
+			if pl.Note != "" {
+				continue
+			}
+			label := fmt.Sprintf("S%02dE??", info.Season)
+			if idx < len(tmdbEps) {
+				label = fmt.Sprintf("S%02dE%02d", info.Season, tmdbEps[idx].EpisodeNumber)
+			}
+			clipEpisode[pl.PrimaryClip()] = label
+			idx++
+		}
+	}
+
 	if robotMode {
 		out := make([]trackResult, 0, len(episodes))
-		for i, pl := range episodes {
+		tmdbIdx := 0
+		for _, pl := range episodes {
 			dur := pl.EstimateDuration(bdmvRoot, disc.DefaultBitrate)
 			count := disc.EstimateEpisodeCount(pl, bdmvRoot, clusterDur)
+			note := pl.Note
+			if note == "commentary" && pl.NoteClip != "" {
+				if epLabel, ok := clipEpisode[pl.NoteClip]; ok {
+					note = fmt.Sprintf("commentary for %s", epLabel)
+				}
+			}
 			r := trackResult{
 				Playlist:  pl.Name,
 				Clip:      pl.PrimaryClip(),
@@ -295,9 +320,11 @@ func printEpisodes(
 				Duration:  bdmv.FormatDuration(dur / count),
 				Chapters:  pl.ChapterCount(),
 				TMDBID:    fmt.Sprintf("%d", showID),
+				Note:      note,
 			}
-			if i < len(tmdbEps) {
-				ep := tmdbEps[i]
+			if pl.Note == "" && tmdbIdx < len(tmdbEps) {
+				ep := tmdbEps[tmdbIdx]
+				tmdbIdx++
 				r.Episode = fmt.Sprintf("S%02dE%02d", info.Season, ep.EpisodeNumber)
 				r.Title = ep.Name
 				if ep.Runtime > 0 {
@@ -313,19 +340,27 @@ func printEpisodes(
 		return
 	}
 
-	fmt.Printf("%-6s %-14s %-10s %-12s %-10s %-12s %s\n",
-		"Ep", "Playlist", "Clip", "Duration", "Chapters", "Episode ID", "Title")
-	fmt.Println(strings.Repeat("-", 94))
+	fmt.Printf("%-6s %-14s %-10s %-12s %-10s %-12s %-22s %s\n",
+		"Ep", "Playlist", "Clip", "Duration", "Chapters", "Episode ID", "Note", "Title")
+	fmt.Println(strings.Repeat("-", 117))
 
-	for i, pl := range episodes {
+	tmdbIdx := 0
+	for _, pl := range episodes {
 		dur := pl.EstimateDuration(bdmvRoot, disc.DefaultBitrate)
 		count := disc.EstimateEpisodeCount(pl, bdmvRoot, clusterDur)
 
 		epLabel := fmt.Sprintf("S%02dE??", info.Season)
 		title := "unknown"
 		episodeID := ""
-		if i < len(tmdbEps) {
-			ep := tmdbEps[i]
+		note := pl.Note
+		if note == "commentary" && pl.NoteClip != "" {
+			if linked, ok := clipEpisode[pl.NoteClip]; ok {
+				note = fmt.Sprintf("commentary for %s", linked)
+			}
+		}
+		if pl.Note == "" && tmdbIdx < len(tmdbEps) {
+			ep := tmdbEps[tmdbIdx]
+			tmdbIdx++
 			epLabel = fmt.Sprintf("S%02dE%02d", info.Season, ep.EpisodeNumber)
 			title = ep.Name
 			if ep.ID > 0 {
@@ -333,13 +368,14 @@ func printEpisodes(
 			}
 		}
 
-		fmt.Printf("%-6s %-14s %-10s %-12s %-10d %-12s %s\n",
+		fmt.Printf("%-6s %-14s %-10s %-12s %-10d %-12s %-22s %s\n",
 			epLabel,
 			pl.Name,
 			pl.PrimaryClip(),
 			bdmv.FormatDuration(dur/count),
 			pl.ChapterCount(),
 			episodeID,
+			note,
 			title,
 		)
 	}
@@ -353,48 +389,82 @@ func printEpisodesNoTMDB(
 	startEpisode int,
 	robotMode bool,
 ) {
+	// Build clip → episode label map from main (non-commentary) episodes.
+	clipEpisode := map[string]string{}
+	{
+		n := startEpisode
+		if n == 0 {
+			n = 1
+		}
+		for _, pl := range episodes {
+			if pl.Note != "" {
+				continue
+			}
+			clipEpisode[pl.PrimaryClip()] = fmt.Sprintf("S%02dE%02d", info.Season, n)
+			n++
+		}
+	}
+
+	resolveNote := func(pl *bdmv.Playlist) string {
+		if pl.Note == "commentary" && pl.NoteClip != "" {
+			if linked, ok := clipEpisode[pl.NoteClip]; ok {
+				return fmt.Sprintf("commentary for %s", linked)
+			}
+		}
+		return pl.Note
+	}
+
 	if robotMode {
 		out := make([]trackResult, 0, len(episodes))
-		for i, pl := range episodes {
+		epNum := startEpisode
+		if epNum == 0 {
+			epNum = 1
+		}
+		for _, pl := range episodes {
 			dur := pl.EstimateDuration(bdmvRoot, disc.DefaultBitrate)
 			count := disc.EstimateEpisodeCount(pl, bdmvRoot, clusterDur)
-			epNum := startEpisode + i
-			if startEpisode == 0 {
-				epNum = i + 1
+			ep := fmt.Sprintf("S%02dE%02d", info.Season, epNum)
+			if pl.Note == "" {
+				epNum++
 			}
 			out = append(out, trackResult{
 				Playlist:  pl.Name,
 				Clip:      pl.PrimaryClip(),
 				Type:      "tv",
 				DiscTitle: info.ShowName,
-				Episode:   fmt.Sprintf("S%02dE%02d", info.Season, epNum),
+				Episode:   ep,
 				Duration:  bdmv.FormatDuration(dur / count),
 				Chapters:  pl.ChapterCount(),
+				Note:      resolveNote(pl),
 			})
 		}
 		json.NewEncoder(os.Stdout).Encode(out)
 		return
 	}
 
-	fmt.Printf("%-6s %-14s %-10s %-12s %s\n", "Ep", "Playlist", "Clip", "Duration", "Chapters")
-	fmt.Println(strings.Repeat("-", 58))
+	fmt.Printf("%-6s %-14s %-10s %-12s %-10s %-22s\n", "Ep", "Playlist", "Clip", "Duration", "Chapters", "Note")
+	fmt.Println(strings.Repeat("-", 80))
 
-	for i, pl := range episodes {
+	epNum := startEpisode
+	if epNum == 0 {
+		epNum = 1
+	}
+	for _, pl := range episodes {
 		dur := pl.EstimateDuration(bdmvRoot, disc.DefaultBitrate)
 		count := disc.EstimateEpisodeCount(pl, bdmvRoot, clusterDur)
 
-		epNum := startEpisode + i
-		if startEpisode == 0 {
-			epNum = i + 1
+		ep := fmt.Sprintf("S%02dE%02d", info.Season, epNum)
+		if pl.Note == "" {
+			epNum++
 		}
 
-		fmt.Printf("S%02dE%02d %-14s %-10s %-12s %d\n",
-			info.Season,
-			epNum,
+		fmt.Printf("%-6s %-14s %-10s %-12s %-10d %-22s\n",
+			ep,
 			pl.Name,
 			pl.PrimaryClip(),
 			bdmv.FormatDuration(dur/count),
 			pl.ChapterCount(),
+			resolveNote(pl),
 		)
 	}
 }
